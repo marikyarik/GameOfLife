@@ -12,11 +12,6 @@ class Cell
         $this->y = $y;
     }
 
-    public function getId(): string
-    {
-        return "{$this->x}|{$this->y}";
-    }
-
     /**
      * @return int
      */
@@ -34,33 +29,89 @@ class Cell
     }
 }
 
+class Task {
+
+    private string $action;
+    private Cell $cell;
+
+    public function __construct(string $action, Cell $cell)
+    {
+        $this->action = $action;
+        $this->cell = $cell;
+    }
+
+    /**
+     * @return string
+     */
+    public function getAction(): string
+    {
+        return $this->action;
+    }
+
+    /**
+     * @return Cell
+     */
+    public function getCell(): Cell
+    {
+        return $this->cell;
+    }
+}
+
 class Repository
 {
 
     private array $cells = [];
+    private array $queue = [];
+
+    public function find(int $x, int $y): ?Cell
+    {
+        return $this->cells[$x][$y] ?? null;
+    }
 
     public function addCell(Cell $cell): void
     {
-        if (!array_key_exists($cell->getId(), $this->cells)) {
-            $this->cells[$cell->getId()] = $cell;
-        }
+        $task = new Task('add', $cell);
+        $this->queue[] = $task;
     }
 
     public function deleteCell(Cell $cell): void
     {
-        if (array_key_exists($cell->getId(), $this->cells)) {
-            unset($this->cells[$cell->getId()]);
+        $task = new Task('delete', $cell);
+        $this->queue[] = $task;
+    }
+
+    public function flush(): void
+    {
+        foreach ($this->queue as $task) {
+            if ($task->getAction() === 'add'){
+                $this->cells[$task->getCell()->getX()][$task->getCell()->getY()] = $task->getCell();
+            } else if ($task->getAction() === 'delete'){
+                if (isset($this->cells[$task->getCell()->getX()][$task->getCell()->getY()])) {
+                    unset($this->cells[$task->getCell()->getX()][$task->getCell()->getY()]);
+                }
+            }
         }
+        $this->queue = [];
     }
 
     public function getCount(): int
     {
-        return sizeof($this->cells);
+        $count = 0;
+
+        foreach ($this->getAll() as $cell) {
+            $count++;
+        }
+
+        return $count;
     }
 
-    public function getAll(): array
+    public function getAll(): Iterator
     {
-        return $this->cells;
+        foreach ($this->cells as $cells) {
+            foreach ($cells as $cell) {
+                yield $cell;
+            }
+        }
     }
 }
 
@@ -104,6 +155,7 @@ class GameOfLife
 
         $cell = new Cell($x, $y);
         $this->repository->addCell($cell);
+        $this->repository->flush();
     }
 
     public function isAlive(): bool
@@ -115,56 +167,60 @@ class GameOfLife
     {
         $this->currentGeneration++;
 
-        $cells = $this->repository->getAll();
-        foreach ($cells as $cell) {
-            $neighborsKey = $this->getNeighborsByKey($cell->getId());
+        foreach ($this->repository->getAll() as $cell) {
+            [$countAlive, $deadCellsCoords] = $this->countAliveByCoord($cell->getX(), $cell->getY());
 
-            $aliveCellKey = array_intersect($neighborsKey, array_keys($cells));
-            $deadCellsKey = array_diff($neighborsKey, $aliveCellKey);
-
-            $countAlive = count($aliveCellKey);
             if ($countAlive < 2 || $countAlive > 3) {
                 $this->repository->deleteCell($cell);
             }
 
-            foreach ($deadCellsKey as $key) {
-                $neighborsKey = $this->getNeighborsByKey($key);
-                $countAlive = count(array_intersect($neighborsKey, array_keys($cells)));
-                if ($countAlive === 3) {
-                    $coordinates = $this->getCoordinatesByKey($key);
+            foreach ($deadCellsCoords as $coords) {
+                [$countAlive] = $this->countAliveByCoord($coords['x'], $coords['y']);
 
-                    if($coordinates['x'] >= 0 && $coordinates['x'] < $this->width && $coordinates['y'] >= 0 && $coordinates['y'] < $this->height) {
-                        $newCell = new Cell($coordinates['x'], $coordinates['y']);
+                if ($countAlive === 3) {
+
+                    if ($coords['x'] >= 0 && $coords['x'] < $this->width && $coords['y'] >= 0 && $coords['y'] < $this->height) {
+                        $newCell = new Cell($coords['x'], $coords['y']);
                         $this->repository->addCell($newCell);
                     }
 
                 }
             }
         }
+
+        $this->repository->flush();
     }
 
-    private function getCoordinatesByKey(string $key): array
-    {
-        $coordinates = explode('|', $key);
-        return ['x' => $coordinates[0], 'y' => $coordinates[1]];
+    private function countAliveByCoord(int $x, int $y): array {
+        $neighborsCoords = $this->getNeighborsByCoord($x, $y);
+
+        $countAlive = 0;
+        $deadCellsCoords = [];
+        foreach ($neighborsCoords as $coord) {
+            $aliveCell = $this->repository->find($coord['x'], $coord['y']);
+            if (null !== $aliveCell) {
+                $countAlive++;
+                continue;
+            }
+
+            $deadCellsCoords[] = $coord;
+        }
+
+        return [$countAlive, $deadCellsCoords];
     }
 
-    private function getNeighborsByKey(string $key): array
+    private function getNeighborsByCoord(int $x, int $y): array
     {
-        $coordinates = $this->getCoordinatesByKey($key);
-
         $neighborsKeys = [];
-        $x = $coordinates['x'];
-        $y = $coordinates['y'];
 
-        $neighborsKeys[] = ($x - 1) . "|" . $y;
-        $neighborsKeys[] = ($x - 1) . "|" . ($y - 1);
-        $neighborsKeys[] = ($x - 1) . "|" . ($y + 1);
-        $neighborsKeys[] = $x . "|" . ($y - 1);
-        $neighborsKeys[] = $x . "|" . ($y + 1);
-        $neighborsKeys[] = ($x + 1) . "|" . $y;
-        $neighborsKeys[] = ($x + 1) . "|" . ($y - 1);
-        $neighborsKeys[] = ($x + 1) . "|" . ($y + 1);
+        $neighborsKeys[] = ['x' => $x - 1, 'y' => $y];
+        $neighborsKeys[] = ['x' => $x - 1, 'y' => $y - 1];
+        $neighborsKeys[] = ['x' => $x - 1, 'y' => $y + 1];
+        $neighborsKeys[] = ['x' => $x, 'y' => $y - 1];
+        $neighborsKeys[] = ['x' => $x, 'y' => $y + 1];
+        $neighborsKeys[] = ['x' => $x + 1, 'y' => $y];
+        $neighborsKeys[] = ['x' => $x + 1, 'y' => $y - 1];
+        $neighborsKeys[] = ['x' => $x + 1, 'y' => $y + 1];
 
         return $neighborsKeys;
     }
@@ -194,6 +250,7 @@ $repository = new Repository();
 
 $game = new GameOfLife($repository);
 
+//$game->setArea(5, 5);
 $game->init();
 $game->print();
 
@@ -203,4 +260,4 @@ while ($game->isAlive()) {
     $game->print();
 }
 
-echo 'All cells are dead. Last generation was: '. $game->getCurrentGeneration() . PHP_EOL;
+echo 'All cells are dead. Last generation was: ' . $game->getCurrentGeneration() . PHP_EOL;
